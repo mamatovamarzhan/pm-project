@@ -1,0 +1,4 @@
+{
+  "rewrites": [{ "source": "/api/(.*)", "destination": "/api" }],
+  "functions": { "api/index.js": { "includeFiles": "server/schema.sql", "maxDuration": 30 } }
+}

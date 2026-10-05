@@ -69,8 +69,14 @@ const showErr = (el, e) => { el.hidden = false; el.textContent = e.message; };
 
 async function render() {
   const app = $("app");
-  if (!meta) meta = await Api.meta().catch(() => null);
-  if (!meta) { app.innerHTML = `<div class="empty"><h1>Cannot reach the server</h1><p class="muted">Start it with <span class="mono">npm start</span> and reload this page.</p></div>`; return; }
+  let metaErr = null;
+  if (!meta) meta = await Api.meta().catch(e => { metaErr = e; return null; });
+  if (!meta) {
+    const detail = metaErr && metaErr.code !== "NETWORK" ? metaErr.message : "Running locally? Start it with npm run dev and reload this page.";
+    app.innerHTML = `<div class="empty"><h1>Cannot reach the server</h1><p class="muted">${esc(detail)}</p><div><button type="button" class="primary" id="retry">Try again</button></div></div>`;
+    $("retry").onclick = () => render();
+    return;
+  }
   if (!Api.hasToken()) { renderLogin(app); return; }
   me = await call(() => Api.me());
   if (!me) return;

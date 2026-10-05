@@ -14,7 +14,8 @@ async function connect(opts) {
       throw new Error("DATABASE_URL must be a PostgreSQL connection string starting with postgresql:// (in Supabase: Connect → Session pooler), not the project's https:// URL.");
     const { Pool } = require("pg");
     const local = /@(localhost|127\.0\.0\.1)[:/]/.test(url);
-    const pool = new Pool({ connectionString: url, ssl: local ? undefined : { rejectUnauthorized: false }, max: 10 });
+    // Serverless instances each open their own pool, so keep it small there.
+    const pool = new Pool({ connectionString: url, ssl: local ? undefined : { rejectUnauthorized: false }, max: process.env.VERCEL ? 2 : 10 });
     await pool.query("select 1");
     return {
       kind: "postgres",
@@ -30,6 +31,8 @@ async function connect(opts) {
       close: () => pool.end()
     };
   }
+  if (process.env.VERCEL)
+    throw new Error("DATABASE_URL is not set. Add it in Vercel: Project → Settings → Environment Variables, then redeploy.");
   const { PGlite } = require("@electric-sql/pglite");
   const dir = o.memory ? undefined : (o.dir || path.join(__dirname, "..", "data", "pg"));
   if (dir) fs.mkdirSync(dir, { recursive: true });
