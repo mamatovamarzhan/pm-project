@@ -10,6 +10,7 @@ Facility Allocation System with a Node.js (Express) backend on PostgreSQL.
 | US4 | Search & Browse Facilities | Find a room: filters, availability status, facility detail, relaxation suggestions |
 | US5 | Request Facility Allocation | Book a room → request saved as Pending with a request ID; My requests |
 | US6 | Intelligent Room Recommendations | Recommendations: ranked free rooms with match % and reasons → pre-filled booking |
+| — | Request Approval | Approvals (Admin / Facility Manager): approve or reject Pending requests (reason required to reject); decision shown in My requests |
 
 ## Run
 

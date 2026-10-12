@@ -85,6 +85,12 @@ CREATE TABLE IF NOT EXISTS bookings (
 CREATE INDEX IF NOT EXISTS bookings_facility_time_idx ON bookings (facility_id, start_ts, end_ts);
 CREATE INDEX IF NOT EXISTS bookings_user_idx ON bookings (username, end_ts);
 
+-- Approval: who approved or rejected a request, when, and the reason given (required for a rejection).
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS decided_by    text REFERENCES users(username);
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS decided_at    timestamptz;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS decision_note text;
+CREATE INDEX IF NOT EXISTS bookings_status_idx ON bookings (status, start_ts);
+
 -- US3: audit log of every change.
 CREATE TABLE IF NOT EXISTS audit_log (
   id            bigserial PRIMARY KEY,

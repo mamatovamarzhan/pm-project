@@ -42,6 +42,9 @@ function buildApp(svc, opts) {
   // US5
   app.get("/api/bookings", r((req, t) => svc.listBookings(t, { all: req.query.all === "1" })));
   app.post("/api/bookings", r((req, t) => svc.createBooking(t, req.body)));
+  // Approval
+  app.get("/api/approvals", r((req, t) => svc.pendingBookings(t)));
+  app.post("/api/bookings/:id/decision", r((req, t) => svc.decideBooking(t, req.params.id, req.body.decision, req.body.note)));
   // US6
   app.post("/api/recommendations", r((req, t) => svc.recommend(t, req.body)));
   // demo tools

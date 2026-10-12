@@ -44,6 +44,8 @@ const Api = (() => {
     facility: id => call("GET", `/api/catalogue/${encodeURIComponent(id)}`),
     bookings: all => call("GET", "/api/bookings" + (all ? "?all=1" : "")),
     book: b => call("POST", "/api/bookings", b),
+    approvals: () => call("GET", "/api/approvals"),
+    decide: (id, decision, note) => call("POST", `/api/bookings/${encodeURIComponent(id)}/decision`, { decision, note }),
     recommend: r => call("POST", "/api/recommendations", r),
     demo: {
       reset: () => call("POST", "/api/demo/reset"),

@@ -46,6 +46,7 @@ const ROUTES = {
   recommend: { label: "Recommendations" },
   book: { label: "Book a room" },
   requests: { label: "My requests" },
+  approvals: { label: "Approvals", roles: STAFF },
   facilities: { label: "Facility management", roles: STAFF },
   admin: { label: "Users & roles", roles: ["Admin"] }
 };
@@ -102,7 +103,7 @@ async function render() {
     page.innerHTML = `<div class="empty"><h1>Access Denied</h1><p class="muted">The ${def.label.toLowerCase()} page is open to ${def.roles.join(" and ")} accounts only. You are signed in as ${esc(me.role)}.</p><div><button type="button" class="primary" id="back">Back to dashboard</button></div></div>`;
     $("back").onclick = () => go("dashboard"); return;
   }
-  await ({ dashboard: pageDashboard, search: pageSearch, recommend: pageRecommend, book: pageBook, requests: pageRequests, facilities: pageFacilities, admin: pageAdmin })[route](page);
+  await ({ dashboard: pageDashboard, search: pageSearch, recommend: pageRecommend, book: pageBook, requests: pageRequests, approvals: pageApprovals, facilities: pageFacilities, admin: pageAdmin })[route](page);
   renderFlash();
 }
 function renderFlash() {
@@ -157,7 +158,7 @@ async function pageDashboard(el) {
   const d = await call(() => Api.dashboard()); if (!d) return;
   const staff = STAFF.includes(me.role), L = me.limits;
   const links = [["search", "Find a room", "Search and filter the catalogue."], ["recommend", "Get recommendations", "Tell us what you need; we rank the best free rooms."], ["book", "Book a room", "Send a booking request for a date and time."]];
-  if (staff) links.push(["facilities", "Manage facilities", "Create, edit and delete rooms in the catalogue."]);
+  if (staff) links.push(["approvals", "Review requests", "Approve or reject pending booking requests."], ["facilities", "Manage facilities", "Create, edit and delete rooms in the catalogue."]);
   if (me.role === "Admin") links.push(["admin", "Users & roles", "Assign roles and read the audit and sign-in logs."]);
   const stats = [["Active facilities", d.activeFacilities], ["Under maintenance", d.underMaintenance], ["Buildings", d.buildings],
     staff ? ["Pending requests", d.pendingRequests] : ["Your active bookings", `${L.active}/${L.maxActive}`]];
@@ -167,7 +168,7 @@ async function pageDashboard(el) {
     <div class="panel cream"><div class="between"><h2>Your upcoming bookings</h2><a href="#requests" data-go2="requests" class="small">All requests</a></div>
       ${d.upcoming.length ? `<ul class="list">${d.upcoming.map(b => `<li><div class="l1"><b>${esc(b.facilityName)}</b>${statusPill(b.status)}</div><div class="small">${esc(fmtRange(b.start, b.end))} · ${esc(b.purpose)}</div><div class="muted small mono">${esc(b.id)}</div></li>`).join("")}</ul>`
         : `<p class="muted">Nothing booked yet. <a href="#book" data-go2="book">Book a room</a>.</p>`}</div>
-    <div class="grid3">${links.map((l, i) => `<a class="qlink ${["teal", "lavender", "peach", "ochre", "pink"][i]}" href="#${l[0]}" data-go2="${l[0]}"><b>${l[1]}</b><span class="muted small">${l[2]}</span></a>`).join("")}</div>`;
+    <div class="grid3">${links.map((l, i) => `<a class="qlink ${["teal", "lavender", "peach", "ochre", "pink", "teal"][i]}" href="#${l[0]}" data-go2="${l[0]}"><b>${l[1]}</b><span class="muted small">${l[2]}</span></a>`).join("")}</div>`;
   el.querySelectorAll("[data-go2]").forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.go2); });
 }
 const statusPill = s => `<span class="pill ${({ Pending: "pending", Approved: "approved", Rejected: "fail", Cancelled: "" })[s] || ""}">${esc(s)}</span>`;
@@ -299,7 +300,7 @@ async function pageBook(el) {
   const p = { facilityId: "", purpose: "", attendees: "", ...nextSlot(), ...(bookPrefill || {}) }; bookPrefill = null;
   const L = me.limits;
   el.innerHTML = `<div><span class="eyebrow">User story 5</span><h1>Book a room</h1>
-      <p class="muted">As ${/^[AEIOU]/.test(me.role) ? "an" : "a"} ${esc(me.role)} you can hold ${plural(L.maxActive, "active booking")} (you have ${L.active}) and book up to ${fmtMinutes(L.maxMinutes)} at a time. Requests stay <b>Pending</b> until a facility manager approves them.</p></div>
+      <p class="muted">As ${/^[AEIOU]/.test(me.role) ? "an" : "a"} ${esc(me.role)} you can hold ${plural(L.maxActive, "active booking")} (you have ${L.active}) and book up to ${fmtMinutes(L.maxMinutes)} at a time. Requests stay <b>Pending</b> until a facility manager or admin approves or rejects them.</p></div>
     <form class="panel" id="bForm" novalidate>
       <div class="field"><label for="b-fac">Room</label><select id="b-fac">${opts(rooms.map(f => [f.id, `${f.name} · ${f.building} · ${f.capacity} seats`]), p.facilityId, "Recommend the best free room for me")}</select></div>
       <div class="grid3">
@@ -342,10 +343,50 @@ async function pageRequests(el, everyone) {
   el.innerHTML = `<div class="between"><div><span class="eyebrow">User story 5</span><h1>${staff && everyone ? "All requests" : "My requests"}</h1></div>
       ${staff ? `<div class="seg" role="group" aria-label="Show"><button type="button" id="q-mine" aria-pressed="${!everyone}">Mine</button><button type="button" id="q-all" aria-pressed="${!!everyone}">Everyone</button></div>` : ""}</div>
     ${list.length ? `<div class="scroll"><table><thead><tr><th>Request ID</th><th>Room</th><th>When</th>${staff && everyone ? "<th>Requested by</th>" : ""}<th style="text-align:right">People</th><th>Purpose</th><th>Status</th></tr></thead><tbody>
-      ${list.map(b => `<tr><td class="mono">${esc(b.id)}</td><td style="font-weight:600">${esc(b.facilityName)}</td><td>${esc(fmtRange(b.start, b.end))}</td>${staff && everyone ? `<td>${esc(b.userName)}</td>` : ""}<td class="num">${b.attendees}</td><td>${esc(b.purpose)}</td><td>${statusPill(b.status)}</td></tr>`).join("")}
+      ${list.map(b => `<tr><td class="mono">${esc(b.id)}</td><td style="font-weight:600">${esc(b.facilityName)}</td><td>${esc(fmtRange(b.start, b.end))}</td>${staff && everyone ? `<td>${esc(b.userName)}</td>` : ""}<td class="num">${b.attendees}</td><td>${esc(b.purpose)}</td><td>${statusPill(b.status)}${decisionInfo(b)}</td></tr>`).join("")}
       </tbody></table></div>` : `<div class="empty"><h3>No requests yet</h3><div><button type="button" class="primary" id="q-book">Book a room</button></div></div>`}`;
   if ($("q-mine")) { $("q-mine").onclick = () => pageRequests(el, false); $("q-all").onclick = () => pageRequests(el, true); }
   if ($("q-book")) $("q-book").onclick = () => go("book");
+}
+
+const decisionInfo = b => b.decidedBy ? `<div class="muted small">${esc(b.status === "Rejected" ? "Rejected" : "Approved")} by ${esc(b.decidedBy)}${b.decidedAt ? ", " + esc(fmtTs(b.decidedAt)) : ""}</div>${b.note ? `<div class="small">${b.status === "Rejected" ? "Reason: " : "Note: "}${esc(b.note)}</div>` : ""}` : "";
+
+/* ===== Approval: Admin / Facility Manager review Pending requests ===== */
+async function pageApprovals(el) {
+  const list = await call(() => Api.approvals(), e => { el.innerHTML = `<div class="empty"><h1>${esc(e.message)}</h1></div>`; }); if (!list) return;
+  el.innerHTML = `<div><span class="eyebrow">Approval</span><h1>Pending requests</h1>
+      <p class="muted">Approve a request to confirm the room, or reject it with a reason the requester will see. You cannot decide your own requests. Every decision is written to the audit log.</p></div>
+    ${list.length ? `<div class="scroll"><table><thead><tr><th>Request ID</th><th>Room</th><th>When</th><th>Requested by</th><th style="text-align:right">People</th><th>Purpose</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
+      ${list.map(b => `<tr><td class="mono">${esc(b.id)}</td><td style="font-weight:600">${esc(b.facilityName)}</td><td>${esc(fmtRange(b.start, b.end))}</td><td>${esc(b.userName)}</td><td class="num">${b.attendees}</td><td>${esc(b.purpose)}</td>
+        <td style="white-space:nowrap">${b.username === me.username ? '<span class="muted small">Your request</span>' : `<button class="sm primary" type="button" data-ok="${esc(b.id)}">Approve</button> <button class="sm" type="button" data-no="${esc(b.id)}">Reject</button>`}</td></tr>`).join("")}
+      </tbody></table></div>` : `<div class="empty"><h3>No pending requests</h3><p class="muted small">New booking requests will appear here.</p></div>`}`;
+  const find = id => list.find(b => b.id === id);
+  el.querySelectorAll("[data-ok]").forEach(btn => btn.onclick = async () => {
+    btn.disabled = true;
+    const b = find(btn.dataset.ok);
+    const r = await call(() => Api.decide(b.id, "Approved"), x => {
+      flash = { kind: "err", text: x.message + (x.extra.conflicts ? " Conflicting: " + x.extra.conflicts.map(c => `${c.id} (${fmtRange(c.start, c.end)})`).join(", ") : "") };
+    });
+    if (r) flash = { text: `${r.id} approved. ${r.facilityName} is booked for ${r.userName}.` };
+    if (Api.hasToken()) render();
+  });
+  el.querySelectorAll("[data-no]").forEach(btn => btn.onclick = () => rejectDlg(find(btn.dataset.no)));
+}
+function rejectDlg(b) {
+  openDlg(`<form id="jForm" novalidate><div><span class="eyebrow mono">${esc(b.id)}</span><h2>Reject this request?</h2></div>
+    <p class="muted">${esc(b.facilityName)} · ${esc(fmtRange(b.start, b.end))} · requested by ${esc(b.userName)}</p>
+    <div class="field"><label for="j-note">Reason (shown to the requester)</label><input type="text" id="j-note" maxlength="200" placeholder="e.g. Room is reserved for exams that week"></div>
+    <div class="err" id="j-err" hidden role="alert"></div>
+    <div class="actions"><button type="button" id="j-cancel">Cancel</button><button class="danger" type="submit">Reject request</button></div></form>`);
+  $("j-note").focus();
+  $("j-cancel").onclick = closeDlg;
+  $("jForm").onsubmit = async e => {
+    e.preventDefault();
+    const note = $("j-note").value.trim();
+    if (!note) { showErr($("j-err"), { message: "Enter a reason for the rejection." }); $("j-note").focus(); return; }
+    const r = await call(() => Api.decide(b.id, "Rejected", note), x => showErr($("j-err"), x));
+    if (r) { closeDlg(); flash = { text: `${r.id} rejected. ${r.userName} will see your reason.` }; render(); }
+  };
 }
 
 /* ===== US3: Facility management ===== */
