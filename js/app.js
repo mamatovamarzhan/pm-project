@@ -413,11 +413,20 @@ function editFacility(f, list, o) {
     <div class="field"><label for="f-status">Status</label><select id="f-status">${opts(meta.statuses, v.status)}</select></div>
     <div class="err" id="f-err" hidden role="alert"></div><div class="actions"><button type="button" id="f-cancel">Cancel</button><button class="primary" type="submit">${f ? "Save changes" : "Create facility"}</button></div></form>`);
   $("f-cancel").onclick = closeDlg;
-  $("fForm").onsubmit = async e => {
-    e.preventDefault();
-    const saved = await call(() => Api.saveFacility({ id: f && f.id, name: $("f-name").value, type: $("f-type").value, capacity: $("f-cap").value, building: $("f-building").value, floor: $("f-floor").value, equipment: readChips($("f-eq")), status: $("f-status").value }), x => showErr($("f-err"), x));
-    if (saved) { closeDlg(); options = null; flash = { text: `${saved.name} was ${f ? "updated" : "created"}.` }; render(); }
+  const save = async force => {
+    const err = $("f-err");
+    const saved = await call(() => Api.saveFacility({ id: f && f.id, name: $("f-name").value, type: $("f-type").value, capacity: $("f-cap").value, building: $("f-building").value, floor: $("f-floor").value, equipment: readChips($("f-eq")), status: $("f-status").value, force }), x => {
+      showErr(err, x);
+      if (x.code !== "HAS_BOOKINGS") return;
+      /* The edit would invalidate existing bookings: list them; only an Admin may save anyway (they are cancelled). */
+      err.innerHTML += `<ul class="small" style="margin:6px 0 0;padding-left:18px">${x.extra.conflicts.map(c => `<li><span class="mono">${esc(c.id)}</span> · ${esc(fmtRange(c.start, c.end))} · ${esc(c.user)} · ${plural(c.attendees, "person", "people")}</li>`).join("")}</ul>
+        <p class="small" style="margin:6px 0 0">${me.role === "Admin" ? "As an Admin you can save anyway. These bookings will be cancelled." : "Only an Admin can save this change. Cancel or move these bookings first."}</p>
+        ${me.role === "Admin" ? `<div style="margin-top:8px"><button type="button" class="danger sm" id="f-force">Save and cancel ${plural(x.extra.conflicts.length, "booking")}</button></div>` : ""}`;
+      if ($("f-force")) $("f-force").onclick = () => save(true);
+    });
+    if (saved) { closeDlg(); options = null; flash = { text: `${saved.name} was ${f ? "updated" : "created"}${saved.cancelled ? `, ${plural(saved.cancelled, "booking")} cancelled` : ""}.` }; render(); }
   };
+  $("fForm").onsubmit = e => { e.preventDefault(); save(false); };
 }
 async function deleteFacilityDlg(f) {
   const conflicts = await call(() => Api.futureBookings(f.id)); if (!conflicts) return;

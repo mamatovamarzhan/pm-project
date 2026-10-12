@@ -91,6 +91,27 @@ ALTER TABLE bookings ADD COLUMN IF NOT EXISTS decided_at    timestamptz;
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS decision_note text;
 CREATE INDEX IF NOT EXISTS bookings_status_idx ON bookings (status, start_ts);
 
+-- Conflict detection in the database itself: a Pending/Approved booking may not overlap another Pending/Approved
+-- booking of the same room, even if a row is written outside the app (e.g. in the Supabase table editor).
+-- Locking the room row serialises concurrent inserts for the same room.
+CREATE OR REPLACE FUNCTION bookings_no_overlap() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE other text;
+BEGIN
+  IF NEW.status NOT IN ('Pending', 'Approved') OR NEW.facility_id IS NULL THEN RETURN NEW; END IF;
+  PERFORM 1 FROM facilities WHERE id = NEW.facility_id FOR UPDATE;
+  SELECT id INTO other FROM bookings
+    WHERE facility_id = NEW.facility_id AND id <> NEW.id AND status IN ('Pending', 'Approved')
+      AND start_ts < NEW.end_ts AND end_ts > NEW.start_ts
+    LIMIT 1;
+  IF other IS NOT NULL THEN
+    RAISE EXCEPTION 'Booking % overlaps booking % for the same room.', NEW.id, other USING ERRCODE = 'exclusion_violation';
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS bookings_no_overlap ON bookings;
+CREATE TRIGGER bookings_no_overlap BEFORE INSERT OR UPDATE OF facility_id, start_ts, end_ts, status ON bookings
+  FOR EACH ROW EXECUTE FUNCTION bookings_no_overlap();
+
 -- US3: audit log of every change.
 CREATE TABLE IF NOT EXISTS audit_log (
   id            bigserial PRIMARY KEY,

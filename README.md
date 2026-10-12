@@ -11,6 +11,7 @@ Facility Allocation System with a Node.js (Express) backend on PostgreSQL.
 | US5 | Request Facility Allocation | Book a room → request saved as Pending with a request ID; My requests |
 | US6 | Intelligent Room Recommendations | Recommendations: ranked free rooms with match % and reasons → pre-filled booking |
 | — | Request Approval | Approvals (Admin / Facility Manager): approve or reject Pending requests (reason required to reject); decision shown in My requests |
+| — | Booking Conflict Detection | Rejects overlapping room bookings, the same person in two rooms at once, and too many attendees; re-checked on approval; editing a room's seats/status lists the bookings it would break (Admin may save and cancel them); a database trigger blocks overlaps even outside the app |
 
 ## Run
 

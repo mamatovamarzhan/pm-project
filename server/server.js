@@ -63,6 +63,8 @@ function buildApp(svc, opts) {
 
   app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
     if (err && err.code && STATUS[err.code]) return res.status(STATUS[err.code]).json({ code: err.code, message: err.message, ...(err.extra || {}) });
+    // Raised by the bookings_no_overlap trigger (schema.sql) if an overlap slipped past the checks in service.js.
+    if (err && err.code === "23P01") return res.status(409).json({ code: "CONFLICT", message: "That room is already booked during that time." });
     if (err && err.type === "entity.parse.failed") return res.status(400).json({ code: "VALIDATION", message: "Malformed JSON." });
     console.error(err);
     res.status(500).json({ code: "SERVER", message: "Something went wrong on the server." });

@@ -272,13 +272,27 @@ function createService(opts) {
       const old = d.id ? await getFacilityRow(d.id) : null;
       if (d.id && !old) fail("NOT_FOUND", "Facility not found.");
       return db.tx(async t => {
-        let id = d.id, action, detail;
+        let id = d.id, action, detail, cancelled = 0;
         if (id) {
+          /* Bookings this edit would make invalid: all of them if the room leaves service, else those larger than the new capacity. */
+          await t.query("SELECT id FROM facilities WHERE id = $1 FOR UPDATE", [id]);
+          const hit = (await t.query(`SELECT b.id, b.start_ts, b.end_ts, b.status, b.attendees, u.name AS user_name FROM bookings b JOIN users u USING (username)
+              WHERE b.facility_id = $1 AND b.status IN ${ACTIVE} AND b.end_ts > $2 AND ($3 OR b.attendees > $4) ORDER BY b.start_ts`,
+            [id, nowDate(), rec.status !== "Active", rec.capacity])).rows;
+          if (hit.length) {
+            const why = rec.status !== "Active" ? `setting it to ${rec.status}` : `reducing it to ${rec.capacity} seats`;
+            if (!d.force) fail("HAS_BOOKINGS", `${plural(hit.length, "future booking")} would become invalid by ${why}.`,
+              { conflicts: hit.map(b => ({ id: b.id, start: new Date(b.start_ts).toISOString(), end: new Date(b.end_ts).toISOString(), status: b.status, user: b.user_name, attendees: b.attendees })) });
+            if (s.role !== "Admin") fail("ACCESS_DENIED", "Access Denied");
+            await t.query("UPDATE bookings SET status = 'Cancelled' WHERE id = ANY($1)", [hit.map(b => b.id)]);
+            cancelled = hit.length;
+          }
           await t.query("UPDATE facilities SET name=$2, type=$3, capacity=$4, building=$5, floor=$6, status=$7 WHERE id=$1", [id, rec.name, rec.type, rec.capacity, rec.building, rec.floor, rec.status]);
           await t.query("DELETE FROM facility_equipment WHERE facility_id = $1", [id]);
           const changes = Object.keys(rec).filter(k => JSON.stringify(old[k]) !== JSON.stringify(rec[k]))
             .map(k => `${k}: ${[].concat(old[k]).join(", ") || "—"} → ${[].concat(rec[k]).join(", ") || "—"}`);
-          action = changes.length ? "Facility updated" : null; detail = `${id} ${rec.name} · ${changes.join("; ")}`;
+          action = changes.length ? "Facility updated" : null;
+          detail = `${id} ${rec.name} · ${changes.join("; ")}` + (cancelled ? ` · ${plural(cancelled, "booking")} cancelled` : "");
         } else {
           id = (await t.query(`INSERT INTO facilities (id, name, type, capacity, building, floor, status)
                 VALUES ('F-' || lpad(nextval('facility_seq')::text, 3, '0'), $1,$2,$3,$4,$5,$6) RETURNING id`,
@@ -287,7 +301,7 @@ function createService(opts) {
         }
         for (const e of rec.equipment) await t.query("INSERT INTO facility_equipment (facility_id, equipment) VALUES ($1,$2)", [id, e]);
         if (action) await audit(s.username, action, detail, t);
-        return { id, ...rec };
+        return { id, ...rec, cancelled };
       });
     },
     async futureBookings(token, id) { await auth(token, ...STAFF); return futureBookingsOf(id); },
@@ -365,6 +379,11 @@ function createService(opts) {
           [f.id, start, end])).rows;
         if (clash.length) fail("CONFLICT", `${f.name} is already booked during that time.`,
           { conflicts: clash.map(c => ({ id: c.id, start: new Date(c.start_ts).toISOString(), end: new Date(c.end_ts).toISOString(), status: c.status })) });
+        /* The same person cannot be in two rooms at once. */
+        const mine = (await t.query(`SELECT id, facility_name, start_ts, end_ts, status FROM bookings WHERE username = $1 AND status IN ${ACTIVE}
+                                     AND start_ts < $3 AND end_ts > $2 ORDER BY start_ts`, [s.username, start, end])).rows;
+        if (mine.length) fail("CONFLICT", `You already have ${mine[0].facility_name} booked during that time (${mine[0].id}).`,
+          { conflicts: mine.map(c => ({ id: c.id, start: new Date(c.start_ts).toISOString(), end: new Date(c.end_ts).toISOString(), status: c.status })) });
         const row = (await t.query(`INSERT INTO bookings (id, facility_id, facility_name, username, start_ts, end_ts, purpose, attendees, status, created_at)
               VALUES ('REQ-' || $8 || '-' || lpad(nextval('booking_seq')::text, 4, '0'), $1,$2,$3,$4,$5,$6,$7,'Pending',$9) RETURNING *`,
           [f.id, f.name, s.username, start, end, purpose, attendees, String(start.getFullYear()), nowDate()])).rows[0];
@@ -401,9 +420,10 @@ function createService(opts) {
         if (new Date(b.start_ts).getTime() <= now()) fail("VALIDATION", `Request ${b.id} has already started and can no longer be ${decision.toLowerCase()}.`);
         if (decision === "Approved") {
           /* Lock the room so two approvals for the same slot cannot pass at the same time. */
-          const f = b.facility_id && (await t.query("SELECT id, name, status FROM facilities WHERE id = $1 FOR UPDATE", [b.facility_id])).rows[0];
+          const f = b.facility_id && (await t.query("SELECT id, name, status, capacity FROM facilities WHERE id = $1 FOR UPDATE", [b.facility_id])).rows[0];
           if (!f || f.status === "Inactive") fail("NOT_FOUND", `${b.facility_name} is no longer in the catalogue. Reject this request instead.`);
           if (f.status !== "Active") fail("VALIDATION", `${f.name} is under maintenance. Reject this request or set the room back to Active first.`);
+          if (b.attendees > f.capacity) fail("CAPACITY", `${f.name} now seats ${f.capacity}, but this request is for ${b.attendees} people. Reject it instead.`);
           const clash = (await t.query(`SELECT id, start_ts, end_ts, status FROM bookings WHERE facility_id = $1 AND id <> $2 AND status = 'Approved'
                                         AND start_ts < $4 AND end_ts > $3 ORDER BY start_ts`, [f.id, b.id, b.start_ts, b.end_ts])).rows;
           if (clash.length) fail("CONFLICT", `${f.name} already has an approved booking during that time.`,
