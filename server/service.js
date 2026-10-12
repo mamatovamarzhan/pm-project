@@ -177,8 +177,10 @@ function createService(opts) {
 
   const toBooking = r => ({ id: r.id, facilityId: r.facility_id, facilityName: r.facility_name, building: r.building || null, username: r.username, userName: r.user_name,
     start: new Date(r.start_ts).toISOString(), end: new Date(r.end_ts).toISOString(), purpose: r.purpose, attendees: r.attendees, status: r.status,
-    createdAt: new Date(r.created_at).toISOString() });
-  const BOOKING_SELECT = `SELECT b.*, u.name AS user_name, f.building FROM bookings b JOIN users u USING (username) LEFT JOIN facilities f ON f.id = b.facility_id`;
+    createdAt: new Date(r.created_at).toISOString(),
+    decidedBy: r.decided_by_name || r.decided_by || null, decidedAt: r.decided_at ? new Date(r.decided_at).toISOString() : null, note: r.decision_note || null });
+  const BOOKING_SELECT = `SELECT b.*, u.name AS user_name, f.building, d.name AS decided_by_name FROM bookings b JOIN users u USING (username)
+    LEFT JOIN facilities f ON f.id = b.facility_id LEFT JOIN users d ON d.username = b.decided_by`;
 
   const api = {
     /* ===================== US1: Login & Authentication ===================== */
@@ -378,6 +380,44 @@ function createService(opts) {
       return rows.map(toBooking);
     },
 
+    /* ===================== Approval (Admin / Facility Manager) ===================== */
+    /* Pending requests that have not started yet, soonest first. */
+    async pendingBookings(token) {
+      await auth(token, ...STAFF);
+      return (await q(`${BOOKING_SELECT} WHERE b.status = 'Pending' AND b.start_ts > $1 ORDER BY b.start_ts LIMIT 200`, [nowDate()])).map(toBooking);
+    },
+    /* Approve or reject a Pending request. A rejection needs a reason; staff cannot decide their own requests. */
+    async decideBooking(token, id, decision, note) {
+      const s = await auth(token, ...STAFF);
+      decision = str(decision); note = str(note);
+      if (!["Approved", "Rejected"].includes(decision)) fail("VALIDATION", "Choose Approve or Reject.");
+      if (decision === "Rejected" && !note) fail("VALIDATION", "Enter a reason for the rejection. The requester will see it.");
+      if (note.length > 200) fail("VALIDATION", "Keep the reason under 200 characters.");
+      return db.tx(async t => {
+        const b = (await t.query("SELECT * FROM bookings WHERE id = $1 FOR UPDATE", [str(id)])).rows[0];
+        if (!b) fail("NOT_FOUND", "Request not found.");
+        if (b.username === s.username) fail("ACCESS_DENIED", "You cannot approve or reject your own request. Ask another staff member.");
+        if (b.status !== "Pending") fail("VALIDATION", `Request ${b.id} is already ${b.status.toLowerCase()}.`);
+        if (new Date(b.start_ts).getTime() <= now()) fail("VALIDATION", `Request ${b.id} has already started and can no longer be ${decision.toLowerCase()}.`);
+        if (decision === "Approved") {
+          /* Lock the room so two approvals for the same slot cannot pass at the same time. */
+          const f = b.facility_id && (await t.query("SELECT id, name, status FROM facilities WHERE id = $1 FOR UPDATE", [b.facility_id])).rows[0];
+          if (!f || f.status === "Inactive") fail("NOT_FOUND", `${b.facility_name} is no longer in the catalogue. Reject this request instead.`);
+          if (f.status !== "Active") fail("VALIDATION", `${f.name} is under maintenance. Reject this request or set the room back to Active first.`);
+          const clash = (await t.query(`SELECT id, start_ts, end_ts, status FROM bookings WHERE facility_id = $1 AND id <> $2 AND status = 'Approved'
+                                        AND start_ts < $4 AND end_ts > $3 ORDER BY start_ts`, [f.id, b.id, b.start_ts, b.end_ts])).rows;
+          if (clash.length) fail("CONFLICT", `${f.name} already has an approved booking during that time.`,
+            { conflicts: clash.map(c => ({ id: c.id, start: new Date(c.start_ts).toISOString(), end: new Date(c.end_ts).toISOString(), status: c.status })) });
+        }
+        await t.query("UPDATE bookings SET status = $2, decided_by = $3, decided_at = $4, decision_note = $5 WHERE id = $1",
+          [b.id, decision, s.username, nowDate(), note || null]);
+        await audit(s.username, decision === "Approved" ? "Booking approved" : "Booking rejected",
+          `${b.id} · ${b.facility_name} · requested by ${b.username}` + (note ? ` · ${note}` : ""), t);
+        const row = (await t.query(`${BOOKING_SELECT} WHERE b.id = $1`, [b.id])).rows[0];
+        return toBooking(row);
+      });
+    },
+
     /* ===================== US6: Intelligent Room Recommendations ===================== */
     async recommend(token, input) {
       const s = await auth(token), i = input || {}, f = recommendInput(i), t0 = Date.now();
@@ -391,7 +431,7 @@ function createService(opts) {
       const s = await auth(token);
       const c = await one(`SELECT count(*) FILTER (WHERE status = 'Active')::int AS active, count(*) FILTER (WHERE status = 'Under Maintenance')::int AS maint,
                            count(DISTINCT building) FILTER (WHERE status <> 'Inactive')::int AS buildings FROM facilities`);
-      const pending = STAFF.includes(s.role) ? (await one("SELECT count(*)::int AS n FROM bookings WHERE status = 'Pending' AND end_ts > $1", [nowDate()])).n : null;
+      const pending = STAFF.includes(s.role) ? (await one("SELECT count(*)::int AS n FROM bookings WHERE status = 'Pending' AND start_ts > $1", [nowDate()])).n : null;
       const upcoming = (await q(`${BOOKING_SELECT} WHERE b.username = $1 AND b.status IN ${ACTIVE} AND b.end_ts > $2 ORDER BY b.start_ts LIMIT 5`, [s.username, nowDate()])).map(toBooking);
       return { activeFacilities: c.active, underMaintenance: c.maint, buildings: c.buildings, pendingRequests: pending, upcoming };
     },
